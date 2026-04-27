@@ -1,0 +1,21 @@
+services:
+  ocr:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    volumes:
+      - .:/app
+      - model_cache:/root/.cache
+    working_dir: /app
+    ports:
+      - "8888:8888"
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - LLM_API_URL=https://gpt.serverspace.kz/v1/chat/completions
+      - LLM_API_KEY=Bearer HOMTOLdjkOgJ1KHPI5TF+DpaUQiNPxuJxHg2fx+qGQnhbagRBrDquLAhdEKDyEnMqu91LXZe8bTmfTGxfFX2+Q==
+    command: >
+      jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+
+volumes:
+  model_cache:

@@ -1,0 +1,36 @@
+# Core
+torch
+transformers
+sentence-transformers
+open-clip-torch
+faiss-cpu
+numpy
+pandas
+
+# PDF & Image Processing
+pdfplumber
+PyMuPDF
+pytesseract
+Pillow
+opencv-python-headless
+pdf2image
+
+# LLM (GPT API)
+requests
+httpx
+
+# API & CLI
+fastapi
+uvicorn
+python-dotenv
+
+# Evaluation
+rouge-score
+nltk
+scikit-learn
+
+# Visualization & Notebooks
+matplotlib
+seaborn
+notebook
+ipywidgets
