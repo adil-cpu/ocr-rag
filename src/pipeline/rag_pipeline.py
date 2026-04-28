@@ -1,8 +1,22 @@
 """
-RAG Pipeline Orchestrator
-=========================
-Full pipeline: PDF → blocks → Markdown → chunks → embeddings → FAISS index.
-Query: question → embedding → retrieval → LLM → answer.
+RAG Pipeline Orchestrator (Этап 5)
+====================================
+Полный мультимодальный RAG-пайплайн.
+
+Ingest (PDF → FAISS):
+  1. PyMuPDF → текстовые блоки + изображения
+  2. BlockClassifier → header / text / list / table / no_text
+  3. ImageExtractor → извлечение изображений
+  4. ImageClassifier (CLIP) → no_text → chart / image
+  5. ChartAnalyzer (OCR + CLIP + BLIP + GPT) → транскрипция chart на русском
+  6. MarkdownBuilder → Markdown-документ
+  7. Chunker → чанки
+  8. Embedder (SBERT) → эмбеддинги
+  9. FAISS → индекс
+
+Query (вопрос → ответ):
+  1. Вопрос → эмбеддинг → FAISS search → top-K чанков
+  2. GPT API → генерация ответа на основе контекста
 """
 
 import os
@@ -17,6 +31,7 @@ from src.pipeline.page_analyzer import PageAnalyzer
 from src.preprocessing.ocr_processor import OCRProcessor
 from src.preprocessing.markdown_builder import MarkdownBuilder
 from src.preprocessing.image_extractor import ImageExtractor
+from src.preprocessing.image_captioner import ImageClassifier
 from src.preprocessing.chart_analyzer import ChartAnalyzer
 from src.rag.chunker import MarkdownChunker
 from src.rag.embedder import MultimodalEmbedder
@@ -34,8 +49,11 @@ class MultimodalRAGPipeline:
     """
     Полный мультимодальный RAG-пайплайн.
 
-    Ingest:  PDF → PageAnalyzer → Blocks → MarkdownBuilder → Markdown
-             → MarkdownChunker → Chunks → Embedder → FAISS
+    Ingest:  PDF → PageAnalyzer (этап 1) → Blocks
+             → ImageExtractor + ImageClassifier (этап 2) → chart / image
+             → ChartAnalyzer (этап 3) → транскрипции графиков
+             → MarkdownBuilder (этап 4) → Markdown
+             → Chunker → Chunks → Embedder → FAISS
 
     Query:   Question → Embedder → FAISS search → top-K chunks
              → RAGGenerator (GPT API) → answer
@@ -52,37 +70,40 @@ class MultimodalRAGPipeline:
         self.process_images = process_images
         os.makedirs(index_dir, exist_ok=True)
 
-        # Этап 1: Document processing
+        # Этап 1: Анализ страниц + классификация текстовых блоков
         self.page_analyzer = PageAnalyzer()
         self.ocr_processor = OCRProcessor()
         self.markdown_builder = MarkdownBuilder()
 
-        # Этап 1.5: Image processing (NEW)
+        # Этап 2: Извлечение и классификация изображений
         self.image_extractor = ImageExtractor()
+        self.image_classifier = ImageClassifier(use_clip=True)
+
+        # Этап 3: Анализ графиков (OCR + CLIP + BLIP + GPT)
         self.chart_analyzer = ChartAnalyzer(
             ocr_processor=self.ocr_processor,
             use_clip=True,
-            use_opencv=True,
             use_blip=True,
+            use_opencv=True,
         )
 
-        # Этап 2: Chunking
+        # Chunking
         self.chunker = MarkdownChunker(
             max_chunk_size=1000,
             chunk_overlap=100,
             min_chunk_size=50,
         )
 
-        # Этап 3: Embeddings
+        # Embeddings
         self.embedder = MultimodalEmbedder(use_clip=False)
 
-        # Этап 4: Vector Store
+        # Vector Store
         self.vector_store = None  # инициализируется при ingest или load
 
-        # Этап 5: Retriever
+        # Retriever
         self.retriever = None  # инициализируется после vector_store
 
-        # Этап 6: Generator
+        # Generator
         self.generator = RAGGenerator(model_name=llm_model)
         self.top_k = top_k
 
@@ -94,53 +115,138 @@ class MultimodalRAGPipeline:
         """
         Обработать PDF и построить индекс.
 
+        Полный поток:
+            1. PyMuPDF → блоки (header, text, list, table, no_text)
+            2. ImageExtractor → изображения из PDF
+            3. ImageClassifier (CLIP) → no_text → chart / image
+            4. ChartAnalyzer (OCR + CLIP + BLIP + GPT) → транскрипции
+            5. MarkdownBuilder → Markdown
+            6. Chunker → чанки
+            7. Embedder → эмбеддинги
+            8. FAISS → индекс
+
         Args:
             pdf_path: путь к PDF-файлу
 
         Returns:
-            Dict с информацией: {pages, blocks, chunks, index_size}
+            Dict с информацией: {source, blocks, charts, images, chunks, index_size}
         """
         logger.info(f"=== INGEST: {pdf_path} ===")
         source_name = os.path.basename(pdf_path)
-        total_steps = 7 if self.process_images else 5
+        doc_name = os.path.splitext(source_name)[0]
 
-        # 1. Извлечение блоков из PDF
-        print(f"[1/{total_steps}] Анализ страниц PDF: {source_name}...")
+        # ─── Шаг 1: Извлечение блоков (этап 1) ───────────────
+        print(f"[1/8] Анализ страниц PDF: {source_name}...")
         blocks = self._extract_blocks(pdf_path)
-        print(f"       Извлечено {len(blocks)} блоков")
+        block_counts = self._count_block_types(blocks)
+        print(f"      Блоков: {len(blocks)} ({block_counts})")
 
-        # 2. Построение Markdown
-        print(f"[2/{total_steps}] Построение Markdown...")
-        markdown = self.markdown_builder.build(blocks, source_name)
-        md_path = os.path.join(self.index_dir, f"{source_name}.md")
+        # ─── Шаг 2: Извлечение изображений ────────────────────
+        chart_blocks = []
+        image_blocks = []
+        extracted_images = []
+
+        if self.process_images:
+            print(f"[2/8] Извлечение изображений из PDF...")
+            images_dir = os.path.join("data/images", doc_name)
+            extracted_images = self.image_extractor.extract_from_pdf(
+                pdf_path, output_dir=images_dir
+            )
+            print(f"      Извлечено {len(extracted_images)} изображений")
+
+            # ─── Шаг 3: Классификация изображений (этап 2) ────
+            if extracted_images:
+                print(f"[3/8] Классификация изображений (CLIP)...")
+                classifications = self.image_classifier.classify_batch(
+                    extracted_images
+                )
+
+                # Разделяем на chart и image
+                chart_images = []
+                image_images = []
+                for img_data, cls_result in zip(extracted_images, classifications):
+                    if cls_result["block_type"] == "chart":
+                        chart_images.append(img_data)
+                    else:
+                        image_images.append(img_data)
+
+                print(
+                    f"      Charts: {len(chart_images)}, "
+                    f"Images: {len(image_images)}"
+                )
+
+                # ─── Шаг 4: Анализ графиков (этап 3) ─────────
+                if chart_images:
+                    print(f"[4/8] Анализ графиков (OCR + CLIP + BLIP + GPT)...")
+                    chart_analyses = self.chart_analyzer.analyze_batch(chart_images)
+
+                    # Создаём Block-объекты для графиков
+                    for img_data, analysis in zip(chart_images, chart_analyses):
+                        chart_blocks.append(Block(
+                            block_type="chart",
+                            bbox=img_data.bbox,
+                            page_num=img_data.page_num + 1,
+                            text=analysis.to_chunk_text(),
+                            metadata=analysis.to_dict(),
+                        ))
+                    print(f"      Проанализировано {len(chart_analyses)} графиков")
+                else:
+                    print(f"[4/8] Графики не найдены, пропуск.")
+
+                # Создаём Block-объекты для обычных изображений
+                for img_data in image_images:
+                    ocr_text = ""
+                    try:
+                        ocr_text = self.ocr_processor.extract_text(img_data.image)
+                    except Exception:
+                        pass
+                    image_blocks.append(Block(
+                        block_type="image",
+                        bbox=img_data.bbox,
+                        page_num=img_data.page_num + 1,
+                        metadata={
+                            "image_path": img_data.saved_path or "",
+                            "ocr_text": ocr_text,
+                        },
+                    ))
+            else:
+                print(f"[3/8] Изображения не найдены, пропуск.")
+                print(f"[4/8] Пропуск.")
+        else:
+            print(f"[2/8] Обработка изображений отключена.")
+            print(f"[3/8] Пропуск.")
+            print(f"[4/8] Пропуск.")
+
+        # ─── Шаг 5: Markdown ─────────────────────────────────
+        print(f"[5/8] Построение Markdown...")
+        all_blocks = blocks + chart_blocks + image_blocks
+        markdown = self.markdown_builder.build(all_blocks, source_name)
+        md_path = os.path.join(self.index_dir, doc_name, f"{source_name}.md")
         self.markdown_builder.save(markdown, md_path)
-        print(f"       Markdown сохранён: {md_path}")
+        print(f"      Markdown сохранён: {md_path}")
 
-        # 3. Chunking
-        print(f"[3/{total_steps}] Разбиение на чанки...")
+        # ─── Шаг 6: Chunking ─────────────────────────────────
+        print(f"[6/8] Разбиение на чанки...")
         chunks = self.chunker.chunk_markdown(markdown, source=source_name)
-        print(f"       Создано {len(chunks)} чанков")
+        print(f"      Создано {len(chunks)} чанков")
 
-        # 4. Embedding
-        print(f"[4/{total_steps}] Создание эмбеддингов...")
+        # ─── Шаг 7: Embeddings ───────────────────────────────
+        print(f"[7/8] Создание эмбеддингов...")
         embeddings = self.embedder.embed_chunks(chunks)
-        print(f"       Эмбеддинги: shape={embeddings.shape}")
+        print(f"      Эмбеддинги: shape={embeddings.shape}")
 
-        # 5. Индексация в FAISS
-        print(f"[5/{total_steps}] Индексация в FAISS...")
+        # ─── Шаг 8: FAISS ────────────────────────────────────
+        print(f"[8/8] Индексация в FAISS...")
         self.vector_store = FAISSVectorStore(dimension=self.embedder.dimension)
         metadata_list = [chunk.to_dict() for chunk in chunks]
         self.vector_store.add(embeddings, metadata_list)
-        print(f"       Текстовых чанков в индексе: {self.vector_store.size}")
-
-        # 6-7. Анализ изображений (если включён)
-        image_chunks = []
-        if self.process_images:
-            image_chunks = self._process_images(pdf_path, source_name, total_steps)
 
         # Сохранение индекса
-        self.vector_store.save(self.index_dir)
-        print(f"       Индекс сохранён: {self.index_dir}")
+        index_save_dir = os.path.join(self.index_dir, doc_name)
+        os.makedirs(index_save_dir, exist_ok=True)
+        self.vector_store.save(index_save_dir)
+        print(f"      Индекс сохранён: {index_save_dir}")
+        print(f"      Всего чанков в индексе: {self.vector_store.size}")
 
         # Инициализация ретривера
         self.retriever = MultimodalRetriever(
@@ -152,18 +258,22 @@ class MultimodalRAGPipeline:
         stats = {
             "source": source_name,
             "blocks": len(blocks),
+            "block_types": block_counts,
+            "extracted_images": len(extracted_images),
+            "charts": len(chart_blocks),
+            "images": len(image_blocks),
             "text_chunks": len(chunks),
-            "image_chunks": len(image_chunks),
-            "total_chunks": len(chunks) + len(image_chunks),
+            "total_in_index": self.vector_store.size,
             "embedding_dim": embeddings.shape[1],
-            "index_size": self.vector_store.size,
         }
 
-        print(f"\nИндексация завершена: {stats}")
+        print(f"\nИндексация завершена:")
+        for k, v in stats.items():
+            print(f"  {k}: {v}")
         return stats
 
     def _extract_blocks(self, pdf_path: str) -> List[Block]:
-        """Извлечь все блоки из PDF-документа."""
+        """Извлечь все блоки из PDF-документа (этап 1)."""
         blocks = []
         doc = fitz.open(pdf_path)
 
@@ -175,54 +285,12 @@ class MultimodalRAGPipeline:
         doc.close()
         return blocks
 
-    def _process_images(
-        self, pdf_path: str, source_name: str, total_steps: int
-    ) -> list:
-        """
-        Извлечь и проанализировать изображения из PDF.
-        Добавить описания как чанки в FAISS-индекс.
-        """
-        # 6. Извлечение изображений
-        print(f"[6/{total_steps}] Извлечение изображений из PDF...")
-        images_dir = os.path.join(self.index_dir, "images")
-        extracted_images = self.image_extractor.extract_from_pdf(
-            pdf_path, output_dir=images_dir
-        )
-        print(f"       Извлечено {len(extracted_images)} изображений")
-
-        if not extracted_images:
-            print(f"       Изображения не найдены, пропуск.")
-            return []
-
-        # 7. Анализ графиков и создание чанков
-        print(f"[7/{total_steps}] Анализ графиков и диаграмм...")
-        analyses = self.chart_analyzer.analyze_batch(extracted_images)
-
-        # Создаём чанки из описаний изображений
-        image_chunks = self.chunker.create_image_chunks(
-            analyses, source=source_name
-        )
-        print(f"       Создано {len(image_chunks)} чанков из изображений")
-
-        if image_chunks:
-            # Эмбеддинги для image-чанков
-            img_embeddings = self.embedder.embed_chunks(image_chunks)
-            img_metadata = [chunk.to_dict() for chunk in image_chunks]
-            self.vector_store.add(img_embeddings, img_metadata)
-            print(
-                f"       Добавлено в индекс. "
-                f"Всего в индексе: {self.vector_store.size}"
-            )
-
-            # Вывод типов найденных графиков
-            for analysis in analyses:
-                print(
-                    f"       Стр. {analysis.page_num}: "
-                    f"{analysis.chart_type_ru} "
-                    f"(conf={analysis.confidence:.0%})"
-                )
-
-        return image_chunks
+    def _count_block_types(self, blocks: List[Block]) -> Dict[str, int]:
+        """Подсчитать количество блоков каждого типа."""
+        counts = {}
+        for b in blocks:
+            counts[b.block_type] = counts.get(b.block_type, 0) + 1
+        return counts
 
     # ================================================================
     # QUERY: question → answer
@@ -245,17 +313,20 @@ class MultimodalRAGPipeline:
         if self.retriever is None:
             return {"answer": "Индекс не найден. Сначала выполните ingest.", "model": "none"}
 
-        # 1. Retrieval (один вызов FAISS)
+        # 1. Retrieval
         k = top_k or self.top_k
         results = self.retriever.retrieve(question, top_k=k)
 
-        # 2. Сборка контекста из результатов
+        # 2. Сборка контекста
         context_parts = []
         for i, r in enumerate(results, 1):
             chunk_type = r.get("type", "text")
-            icon = "📊 описание изображения" if chunk_type == "image_caption" else "📄 текст"
+            if chunk_type == "image_caption":
+                label = "описание графика/изображения"
+            else:
+                label = "текст"
 
-            source_info = f" ({icon}"
+            source_info = f" ({label}"
             if r.get("page"):
                 source_info += f", стр. {r['page']}"
                 if r.get("section"):

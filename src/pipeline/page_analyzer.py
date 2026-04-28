@@ -1,3 +1,12 @@
+"""
+Page Analyzer Module (Этап 5)
+==============================
+Разбор одной страницы PDF:
+  - извлечение текстовых блоков и изображений через PyMuPDF
+  - классификация текстовых блоков через BlockClassifier (этап 1)
+  - изображения помечаются как 'no_text' (этап 2 определит chart/image через CLIP)
+"""
+
 import fitz
 from typing import List
 
@@ -8,8 +17,8 @@ from src.layout.classifier import BlockClassifier
 class PageAnalyzer:
     """
     Разбор одной страницы PDF:
-    - извлечение блоков
-    - классификация
+    - тип 0 (текст) → BlockClassifier → header / text / list / table / no_text
+    - тип 1 (изображение) → no_text (будет классифицирован CLIP позже)
     """
 
     def __init__(self):
@@ -40,11 +49,11 @@ class PageAnalyzer:
                     )
                 )
 
-            # === КАРТИНКИ / ГРАФИКИ ===
+            # === ИЗОБРАЖЕНИЯ → no_text (этап 2 определит chart/image) ===
             elif b["type"] == 1:
                 result.append(
                     Block(
-                        block_type="image",
+                        block_type="no_text",
                         bbox=bbox,
                         page_num=page_num,
                         metadata={"source": "pdf"}
