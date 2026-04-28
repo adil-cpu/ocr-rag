@@ -1,5 +1,5 @@
 """
-Chart Analyzer Module
+Chart Analyzer Module (Этап 3)
 ===============================
 Анализ графиков и диаграмм, извлечённых из PDF.
 

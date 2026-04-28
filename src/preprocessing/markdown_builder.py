@@ -1,8 +1,21 @@
 """
-Markdown Builder Module
-=======================
-Converts a list of Block objects (from layout analysis) into a structured
-Markdown document, preserving headers, paragraphs, lists, tables, and images.
+Markdown Builder Module (Этап 4)
+=================================
+Конвертирует список Block-объектов (из layout analysis) в структурированный
+Markdown-документ, сохраняя структуру и типы блоков.
+
+Поддерживаемые типы блоков (7):
+  Этап 1 (BlockClassifier):  header, text, list, table, no_text
+  Этап 2 (CLIP):             chart, image
+
+Каждый тип рендерится по-своему:
+  header  → ## Заголовок
+  text    → обычный параграф
+  list    → - элемент списка
+  table   → | col1 | col2 |
+  chart   → ### [График: подтип]\n(транскрипция от GPT на русском)
+  image   → ### [Изображение]\n(OCR-текст если есть)
+  no_text → пропускается (должен быть классифицирован до этого этапа)
 """
 
 from typing import List, Optional
@@ -16,12 +29,15 @@ logger = logging.getLogger(__name__)
 class MarkdownBuilder:
     """
     Конвертирует список Block-объектов в Markdown-документ.
+
     Каждый тип блока обрабатывается по-своему:
-      - header  → ## Заголовок
-      - paragraph → обычный текст
-      - list_item → - пункт списка
-      - table → markdown-таблица
-      - image → ![image](path)
+      header  → ## Заголовок
+      text    → обычный текст (параграф)
+      list    → - пункт списка
+      table   → markdown-таблица (| col | col |)
+      chart   → блок с транскрипцией графика
+      image   → блок с описанием изображения
+      no_text → пропускается
     """
 
     def __init__(self):
@@ -56,48 +72,65 @@ class MarkdownBuilder:
 
     def _render_block(self, block: Block):
         """Рендерит один блок в Markdown."""
-        if not block.text and block.block_type != "image":
+        # Для текстовых блоков — пропускаем пустые
+        if not block.text and block.block_type not in ("chart", "image", "no_text"):
             return
 
         if block.block_type == "header":
             self._render_header(block)
-        elif block.block_type == "paragraph":
-            self._render_paragraph(block)
-        elif block.block_type == "list_item":
-            self._render_list_item(block)
+        elif block.block_type == "text":
+            self._render_text(block)
+        elif block.block_type == "list":
+            self._render_list(block)
         elif block.block_type == "table":
             self._render_table(block)
+        elif block.block_type == "chart":
+            self._render_chart(block)
         elif block.block_type == "image":
             self._render_image(block)
-        elif block.block_type == "empty":
-            pass  # skip empty blocks
+        elif block.block_type == "no_text":
+            pass  # пропускаем — должен быть классифицирован на этапе 2
         else:
-            # Fallback: paragraph
-            self._render_paragraph(block)
+            # Fallback: обычный текст
+            self._render_text(block)
+
+    # ─── header ──────────────────────────────────────────────
 
     def _render_header(self, block: Block):
+        """Заголовок → ## Текст"""
         text = block.text.strip()
         self._lines.append(f"## {text}")
         self._lines.append("")
 
-    def _render_paragraph(self, block: Block):
+    # ─── text ────────────────────────────────────────────────
+
+    def _render_text(self, block: Block):
+        """Параграф → обычный текст"""
         text = block.text.strip()
         self._lines.append(text)
         self._lines.append("")
 
-    def _render_list_item(self, block: Block):
+    # ─── list ────────────────────────────────────────────────
+
+    def _render_list(self, block: Block):
+        """Элемент списка → - текст"""
         text = block.text.strip()
-        # Убираем маркер если он есть, и подставляем стандартный
-        for marker in ["•", "–", "—", "-"]:
+        # Убираем существующий маркер и ставим стандартный
+        for marker in ["•", "–", "—", "-", "▪", "►", "●"]:
             if text.startswith(marker):
                 text = text[len(marker):].strip()
                 break
+        # Нумерованные списки: "1. текст" или "1) текст"
+        if len(text) > 2 and text[0].isdigit() and text[1] in ".)":
+            text = text[2:].strip()
         self._lines.append(f"- {text}")
+
+    # ─── table ───────────────────────────────────────────────
 
     def _render_table(self, block: Block):
         """
-        Рендерит табличные данные.
-        Простая эвристика: разбиваем по пробелам/табам.
+        Табличные данные → Markdown-таблица.
+        Эвристика: разбиваем по пробелам/табам.
         """
         text = block.text.strip()
         rows = text.split("\n")
@@ -130,16 +163,72 @@ class MarkdownBuilder:
         cells = re.split(r"\s{2,}", row.strip())
         return [c.strip() for c in cells if c.strip()]
 
-    def _render_image(self, block: Block):
-        """Рендерит изображение."""
-        image_path = ""
-        if block.metadata and "path" in block.metadata:
-            image_path = block.metadata["path"]
-        elif block.metadata and "source" in block.metadata:
-            image_path = f"image_p{block.page_num}"
+    # ─── chart ───────────────────────────────────────────────
 
-        self._lines.append(f"![Изображение со стр. {block.page_num}]({image_path})")
+    def _render_chart(self, block: Block):
+        """
+        График/диаграмма → блок с транскрипцией.
+
+        Ожидает в block.metadata:
+          - chart_subtype_ru: тип графика на русском
+          - gpt_description: описание от GPT (на русском)
+          - ocr_text: текст, извлечённый OCR
+          - image_path: путь к изображению
+        """
+        meta = block.metadata or {}
+        chart_type = meta.get("chart_subtype_ru", "График")
+        description = meta.get("gpt_description", "")
+        ocr_text = meta.get("ocr_text", "")
+        image_path = meta.get("image_path", "")
+
+        self._lines.append(f"### [График: {chart_type}]")
         self._lines.append("")
+
+        if image_path:
+            self._lines.append(f"![{chart_type}, стр. {block.page_num}]({image_path})")
+            self._lines.append("")
+
+        if description:
+            self._lines.append(f"**Транскрипция:** {description}")
+            self._lines.append("")
+
+        if ocr_text:
+            ocr_preview = ocr_text[:200]
+            if len(ocr_text) > 200:
+                ocr_preview += "..."
+            self._lines.append(f"*OCR-текст:* {ocr_preview}")
+            self._lines.append("")
+
+    # ─── image ───────────────────────────────────────────────
+
+    def _render_image(self, block: Block):
+        """
+        Изображение (фото/логотип) → краткий блок.
+
+        Ожидает в block.metadata:
+          - image_path: путь к изображению
+          - ocr_text: текст, извлечённый OCR (если есть)
+        """
+        meta = block.metadata or {}
+        image_path = meta.get("image_path", meta.get("path", ""))
+        ocr_text = meta.get("ocr_text", "")
+
+        if image_path:
+            self._lines.append(
+                f"![Изображение со стр. {block.page_num}]({image_path})"
+            )
+        else:
+            self._lines.append(f"*[Изображение со стр. {block.page_num}]*")
+
+        if ocr_text:
+            ocr_preview = ocr_text[:100]
+            if len(ocr_text) > 100:
+                ocr_preview += "..."
+            self._lines.append(f"*Текст на изображении:* {ocr_preview}")
+
+        self._lines.append("")
+
+    # ─── save ────────────────────────────────────────────────
 
     def save(self, markdown_text: str, output_path: str):
         """Сохранить Markdown в файл."""
