@@ -1,88 +1,113 @@
 """
 Chart Analyzer Module
-=====================
+===============================
 Анализ графиков и диаграмм, извлечённых из PDF.
 
-Комбинирует три подхода:
-1. OCR — извлечение текста (подписи осей, легенда, числа)
-2. CLIP — классификация типа графика (zero-shot)
-3. OpenCV — структурный анализ (цвета, линии, контуры)
+Комбинирует четыре подхода:
+1. OCR (Tesseract) — извлечение текста (подписи осей, легенда, числа)
+2. CLIP (zero-shot) — классификация подтипа графика
+3. BLIP — генерация описания изображения (на английском)
+4. GPT API — перевод и дополнение описания на русском языке
+
+Поток:
+    OCR → текст с графика
+    CLIP → подтип (столбчатая, линейная, круговая...)
+    BLIP → "This image shows a bar chart with..."
+    GPT → берёт BLIP + OCR + CLIP → русское описание
 
 Использование:
     analyzer = ChartAnalyzer()
     result = analyzer.analyze(pil_image, page_num=5)
-    print(result["description"])
+    print(result["gpt_description"])  # описание на русском
+    print(result["chunk_text"])       # текст для FAISS
 """
 
-import logging
+import os
+import json
 import re
+import logging
 from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
 
 import numpy as np
+import requests
 from PIL import Image
 
 logger = logging.getLogger(__name__)
 
 
-# ─── Категории графиков для CLIP ──────────────────────────────
+# ─── Подтипы графиков для CLIP ──────────────────────────────
 
-CHART_CATEGORIES = [
+CHART_SUBTYPES = [
     "bar chart or column chart",
     "line chart or line graph",
     "pie chart or donut chart",
     "scatter plot or dot plot",
-    "flowchart or block diagram",
-    "table with data",
     "histogram",
     "area chart",
+    "flowchart or block diagram",
+    "table with data",
     "organizational chart or tree diagram",
-    "map or geographic visualization",
-    "photograph or picture",
-    "mathematical formula or equation",
 ]
 
-CHART_CATEGORY_LABELS_RU = {
+CHART_SUBTYPES_RU = {
     "bar chart or column chart": "Столбчатая/полосовая диаграмма",
     "line chart or line graph": "Линейный график",
     "pie chart or donut chart": "Круговая диаграмма",
-    "scatter plot or dot plot": "Точечная диаграмма (scatter plot)",
-    "flowchart or block diagram": "Блок-схема / диаграмма процесса",
-    "table with data": "Таблица с данными",
+    "scatter plot or dot plot": "Точечная диаграмма",
     "histogram": "Гистограмма",
     "area chart": "Диаграмма с областями",
-    "organizational chart or tree diagram": "Организационная диаграмма / дерево",
-    "map or geographic visualization": "Карта / географическая визуализация",
-    "photograph or picture": "Фотография / иллюстрация",
-    "mathematical formula or equation": "Математическая формула",
+    "flowchart or block diagram": "Блок-схема",
+    "table with data": "Таблица с данными",
+    "organizational chart or tree diagram": "Организационная диаграмма",
 }
+
+
+# ─── Промпт для GPT ─────────────────────────────────────────
+
+CHART_DESCRIPTION_PROMPT = """Ты — ассистент для анализа графиков и диаграмм из документов.
+
+Тебе предоставлены данные, полученные автоматическим анализом изображения графика:
+- Тип графика (CLIP): {chart_type}
+- Описание от BLIP (на английском): {blip_caption}
+- Текст, распознанный OCR с изображения: {ocr_text}
+
+На основе ВСЕХ этих данных напиши подробное описание графика на РУССКОМ языке.
+Включи:
+1. Тип визуализации
+2. Что отображается (какие данные, оси, единицы измерения)
+3. Конкретные значения и числа из OCR-текста
+4. Основные тренды или выводы (если можно определить)
+
+Если OCR-текст неполный или содержит мусор, используй только достоверную информацию.
+Ответ должен быть кратким (3-5 предложений), информативным и на русском языке."""
 
 
 @dataclass
 class ChartAnalysisResult:
-    """Результат анализа графика/изображения."""
+    """Результат анализа графика/диаграммы."""
 
     page_num: int
-    chart_type: str = "unknown"            # классификация из CLIP
-    chart_type_ru: str = "Неизвестно"      # русский вариант
-    confidence: float = 0.0                # уверенность CLIP (0-1)
-    ocr_text: str = ""                     # текст, извлечённый OCR
-    blip_caption: str = ""                 # описание от BLIP (нейросетевое)
+    chart_subtype: str = "unknown"          # подтип из CLIP (bar/line/pie...)
+    chart_subtype_ru: str = "Неизвестно"    # русский вариант
+    confidence: float = 0.0                 # уверенность CLIP (0-1)
+    ocr_text: str = ""                      # текст, извлечённый OCR
+    blip_caption: str = ""                  # описание от BLIP (английский)
+    gpt_description: str = ""               # описание от GPT (русский)
     dominant_colors: List[str] = field(default_factory=list)
     num_color_segments: int = 0
     has_lines: bool = False
     num_lines: int = 0
     has_text: bool = False
-    description: str = ""                  # итоговое текстовое описание
     image_path: Optional[str] = None
 
     def to_chunk_text(self) -> str:
         """Сформировать текст для индексации в FAISS."""
         parts = []
-        parts.append(f"[Тип: {self.chart_type_ru}] [Стр. {self.page_num}]")
+        parts.append(f"[Тип: {self.chart_subtype_ru}] [Стр. {self.page_num}]")
 
-        if self.blip_caption:
-            parts.append(f"Содержание изображения: {self.blip_caption}")
+        if self.gpt_description:
+            parts.append(f"Описание: {self.gpt_description}")
 
         if self.ocr_text:
             ocr_preview = self.ocr_text[:300]
@@ -90,25 +115,22 @@ class ChartAnalysisResult:
                 ocr_preview += "..."
             parts.append(f"Текст на изображении: {ocr_preview}")
 
-        if self.description:
-            parts.append(f"Анализ: {self.description}")
-
         return "\n".join(parts)
 
     def to_dict(self) -> Dict:
         return {
             "page_num": self.page_num,
-            "chart_type": self.chart_type,
-            "chart_type_ru": self.chart_type_ru,
+            "chart_subtype": self.chart_subtype,
+            "chart_subtype_ru": self.chart_subtype_ru,
             "confidence": self.confidence,
             "ocr_text": self.ocr_text[:200],
             "blip_caption": self.blip_caption,
+            "gpt_description": self.gpt_description,
             "dominant_colors": self.dominant_colors,
             "num_color_segments": self.num_color_segments,
             "has_lines": self.has_lines,
             "num_lines": self.num_lines,
             "has_text": self.has_text,
-            "description": self.description,
             "image_path": self.image_path,
         }
 
@@ -119,7 +141,9 @@ class ChartAnalyzer:
 
     Объединяет:
     - OCR (Tesseract) для текста на изображении
-    - CLIP (zero-shot) для определения типа графика
+    - CLIP (zero-shot) для определения подтипа графика
+    - BLIP для генерации описания изображения (на английском)
+    - GPT API для перевода и дополнения описания на русском
     - OpenCV для структурного анализа (цвета, линии)
     """
 
@@ -127,20 +151,30 @@ class ChartAnalyzer:
         self,
         ocr_processor=None,
         use_clip: bool = True,
-        use_opencv: bool = True,
         use_blip: bool = True,
+        use_opencv: bool = True,
+        api_url: Optional[str] = None,
+        api_key: Optional[str] = None,
     ):
         """
         Args:
-            ocr_processor: экземпляр OCRProcessor (None → создастся автоматически)
-            use_clip: использовать CLIP для классификации типа графика
+            ocr_processor: экземпляр OCRProcessor (None — создастся автоматически)
+            use_clip: использовать CLIP для определения подтипа графика
+            use_blip: использовать BLIP для генерации описания
             use_opencv: использовать OpenCV для структурного анализа
-            use_blip: использовать BLIP для генерации описаний
+            api_url: URL GPT API (по умолчанию из .env)
+            api_key: API ключ (по умолчанию из .env)
         """
         self.ocr_processor = ocr_processor
         self.use_clip = use_clip
-        self.use_opencv = use_opencv
         self.use_blip = use_blip
+        self.use_opencv = use_opencv
+        self.api_url = api_url or os.getenv(
+            "LLM_API_URL", "https://gpt.serverspace.kz/v1/chat/completions"
+        )
+        self.api_key = api_key or os.getenv(
+            "LLM_API_KEY", ""
+        )
         self._clip_model = None
         self._clip_processor = None
         self._blip_model = None
@@ -157,12 +191,19 @@ class ChartAnalyzer:
         image_path: Optional[str] = None,
     ) -> ChartAnalysisResult:
         """
-        Полный анализ одного изображения.
+        Полный анализ одного графика/диаграммы.
+
+        Этапы:
+            1. OCR — извлечь текст (подписи, числа)
+            2. CLIP — определить подтип (столбчатая, линейная, круговая...)
+            3. BLIP — сгенерировать описание на английском
+            4. GPT — перевести и дополнить описание на русском
+            5. OpenCV — структурный анализ (цвета, линии)
 
         Args:
             image: PIL Image
             page_num: номер страницы (1-based)
-            image_path: путь к сохранённому файлу (если есть)
+            image_path: путь к сохранённому файлу
 
         Returns:
             ChartAnalysisResult
@@ -177,29 +218,33 @@ class ChartAnalyzer:
         result.ocr_text = ocr_text
         result.has_text = len(ocr_text.strip()) > 10
 
-        # 2. CLIP — определить тип
+        # 2. CLIP — определить подтип графика
         if self.use_clip:
-            chart_type, confidence = self._classify_chart_type(image)
-            result.chart_type = chart_type
-            result.chart_type_ru = CHART_CATEGORY_LABELS_RU.get(
-                chart_type, chart_type
+            chart_subtype, confidence = self._classify_chart_subtype(image)
+            result.chart_subtype = chart_subtype
+            result.chart_subtype_ru = CHART_SUBTYPES_RU.get(
+                chart_subtype, chart_subtype
             )
             result.confidence = confidence
 
-        # 3. BLIP — нейросетевое описание изображения
+        # 3. BLIP — описание на английском
         if self.use_blip:
             result.blip_caption = self._generate_blip_caption(image)
 
-        # 4. OpenCV — структурный анализ
+        # 4. GPT — перевод и описание на русском
+        result.gpt_description = self._generate_gpt_description(
+            chart_type_ru=result.chart_subtype_ru,
+            blip_caption=result.blip_caption,
+            ocr_text=ocr_text,
+        )
+
+        # 5. OpenCV — структурный анализ
         if self.use_opencv:
             cv_features = self._analyze_structure(image)
             result.dominant_colors = cv_features.get("dominant_colors", [])
             result.num_color_segments = cv_features.get("num_color_segments", 0)
             result.has_lines = cv_features.get("has_lines", False)
             result.num_lines = cv_features.get("num_lines", 0)
-
-        # 5. Генерация итогового описания
-        result.description = self._generate_description(result)
 
         return result
 
@@ -208,7 +253,7 @@ class ChartAnalyzer:
         extracted_images: list,
     ) -> List[ChartAnalysisResult]:
         """
-        Анализ списка ExtractedImage (из ImageExtractor).
+        Анализ списка ExtractedImage (только тех, что классифицированы как chart).
 
         Args:
             extracted_images: список ExtractedImage объектов
@@ -219,9 +264,9 @@ class ChartAnalyzer:
         results = []
         for i, img_data in enumerate(extracted_images):
             logger.info(
-                f"  Анализ [{i+1}/{len(extracted_images)}]: "
+                f"  Анализ графика [{i+1}/{len(extracted_images)}]: "
                 f"стр. {img_data.page_num + 1}, "
-                f"{img_data.width}×{img_data.height}px"
+                f"{img_data.width}x{img_data.height}px"
             )
             result = self.analyze(
                 image=img_data.image,
@@ -247,11 +292,9 @@ class ChartAnalyzer:
         try:
             ocr = self._get_ocr()
             text = ocr.extract_text(image)
-            # Очистка: убираем лишние пустые строки и мусор
             if text:
-                lines = [l.strip() for l in text.split("\n") if l.strip()]
-                # Отфильтровать строки из 1-2 символов мусора
-                lines = [l for l in lines if len(l) > 2 or l.isdigit()]
+                lines = [line.strip() for line in text.split("\n") if line.strip()]
+                lines = [line for line in lines if len(line) > 2 or line.isdigit()]
                 return "\n".join(lines)
             return ""
         except Exception as e:
@@ -259,7 +302,7 @@ class ChartAnalyzer:
             return ""
 
     # ────────────────────────────────────────────────────────────
-    # BLIP — генерация описаний изображений
+    # BLIP — описание изображения (на английском)
     # ────────────────────────────────────────────────────────────
 
     def _load_blip(self):
@@ -267,7 +310,7 @@ class ChartAnalyzer:
         if self._blip_model is None and self.use_blip:
             try:
                 from transformers import BlipProcessor, BlipForConditionalGeneration
-                logger.info("Загрузка BLIP для генерации описаний...")
+                logger.info("Загрузка BLIP (Salesforce/blip-image-captioning-large)...")
                 self._blip_processor = BlipProcessor.from_pretrained(
                     "Salesforce/blip-image-captioning-large"
                 )
@@ -281,15 +324,14 @@ class ChartAnalyzer:
 
     def _generate_blip_caption(self, image: Image.Image) -> str:
         """
-        Сгенерировать текстовое описание изображения через BLIP.
-        Используется conditional captioning с промптом.
+        Сгенерировать описание изображения через BLIP.
+        Результат на английском — будет переведён GPT.
         """
         try:
             self._load_blip()
             if self._blip_model is None:
                 return ""
 
-            # Conditional captioning — описание с подсказкой
             prompt = "This image shows"
             inputs = self._blip_processor(
                 image, prompt, return_tensors="pt"
@@ -308,7 +350,7 @@ class ChartAnalyzer:
             return ""
 
     # ────────────────────────────────────────────────────────────
-    # CLIP
+    # CLIP — подтип графика
     # ────────────────────────────────────────────────────────────
 
     def _load_clip(self):
@@ -328,34 +370,121 @@ class ChartAnalyzer:
                 logger.warning(f"CLIP недоступен: {e}")
                 self.use_clip = False
 
-    def _classify_chart_type(self, image: Image.Image) -> Tuple[str, float]:
-        """Классифицировать тип графика через CLIP zero-shot."""
+    def _classify_chart_subtype(self, image: Image.Image) -> Tuple[str, float]:
+        """Классифицировать подтип графика через CLIP zero-shot."""
         try:
             self._load_clip()
             if self._clip_model is None:
                 return "unknown", 0.0
 
+            import torch
+
             inputs = self._clip_processor(
-                text=CHART_CATEGORIES,
+                text=CHART_SUBTYPES,
                 images=image,
                 return_tensors="pt",
                 padding=True,
             )
-            outputs = self._clip_model(**inputs)
+
+            with torch.no_grad():
+                outputs = self._clip_model(**inputs)
+
             logits = outputs.logits_per_image[0]
             probs = logits.softmax(dim=0).detach().numpy()
 
             best_idx = int(probs.argmax())
-            category = CHART_CATEGORIES[best_idx]
+            category = CHART_SUBTYPES[best_idx]
             confidence = float(probs[best_idx])
 
-            logger.debug(
-                f"CLIP: {category} (conf={confidence:.3f})"
-            )
+            logger.debug(f"CLIP подтип: {category} (conf={confidence:.3f})")
             return category, confidence
         except Exception as e:
             logger.warning(f"CLIP классификация не удалась: {e}")
             return "unknown", 0.0
+
+    # ────────────────────────────────────────────────────────────
+    # GPT — перевод и описание на русском
+    # ────────────────────────────────────────────────────────────
+
+    def _generate_gpt_description(
+        self,
+        chart_type_ru: str,
+        blip_caption: str,
+        ocr_text: str,
+    ) -> str:
+        """
+        Перевести и дополнить описание графика на русском через GPT API.
+
+        Отправляет: BLIP (англ.) + OCR-текст + тип CLIP → русское описание.
+        """
+        if not self.api_key:
+            logger.warning("GPT API ключ не задан, пропуск генерации описания")
+            return self._fallback_description(chart_type_ru, blip_caption, ocr_text)
+
+        # Если ни BLIP, ни OCR не дали результат
+        if not blip_caption.strip() and not ocr_text.strip():
+            return self._fallback_description(chart_type_ru, blip_caption, ocr_text)
+
+        try:
+            prompt = CHART_DESCRIPTION_PROMPT.format(
+                chart_type=chart_type_ru,
+                blip_caption=blip_caption or "(описание недоступно)",
+                ocr_text=ocr_text[:500] if ocr_text else "(текст не распознан)",
+            )
+
+            payload = {
+                "model": "gpt-oss-20b",
+                "max_tokens": 300,
+                "temperature": 0.3,
+                "messages": [
+                    {"role": "user", "content": prompt},
+                ],
+            }
+
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": self.api_key,
+            }
+
+            response = requests.post(
+                self.api_url,
+                headers=headers,
+                data=json.dumps(payload),
+                timeout=30,
+            )
+
+            if response.status_code != 200:
+                logger.warning(
+                    f"GPT API ошибка {response.status_code}: {response.text[:100]}"
+                )
+                return self._fallback_description(chart_type_ru, blip_caption, ocr_text)
+
+            result = response.json()
+            description = result["choices"][0]["message"]["content"].strip()
+
+            logger.info(f"  GPT описание ({len(description)} символов)")
+            return description
+
+        except requests.exceptions.Timeout:
+            logger.warning("GPT API timeout")
+            return self._fallback_description(chart_type_ru, blip_caption, ocr_text)
+        except Exception as e:
+            logger.warning(f"GPT ошибка: {e}")
+            return self._fallback_description(chart_type_ru, blip_caption, ocr_text)
+
+    def _fallback_description(
+        self, chart_type_ru: str, blip_caption: str, ocr_text: str
+    ) -> str:
+        """Описание без GPT — на основе типа, BLIP и OCR."""
+        parts = [chart_type_ru]
+        if blip_caption:
+            parts.append(f"(BLIP: {blip_caption})")
+        if ocr_text.strip():
+            keywords = self._extract_keywords(ocr_text)
+            if keywords:
+                parts.append(f"Ключевые слова: {', '.join(keywords[:8])}")
+        return ". ".join(parts) + "."
 
     # ────────────────────────────────────────────────────────────
     # OpenCV — структурный анализ
@@ -363,10 +492,8 @@ class ChartAnalyzer:
 
     def _analyze_structure(self, image: Image.Image) -> Dict:
         """
-        Структурный анализ изображения через OpenCV.
-        Определяет:
-        - Доминирующие цвета (K-Means кластеризация)
-        - Наличие и количество линий (Hough Transform)
+        Структурный анализ через OpenCV.
+        Определяет доминирующие цвета и линии.
         """
         features = {
             "dominant_colors": [],
@@ -378,14 +505,10 @@ class ChartAnalyzer:
         try:
             import cv2
 
-            # PIL → OpenCV (RGB → BGR)
             img_array = np.array(image.convert("RGB"))
             img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
 
-            # --- Доминирующие цвета ---
             features.update(self._extract_colors(img_bgr))
-
-            # --- Детекция линий ---
             features.update(self._detect_lines(img_bgr))
 
         except ImportError:
@@ -400,7 +523,6 @@ class ChartAnalyzer:
         try:
             import cv2
 
-            # Ресайз для скорости
             small = cv2.resize(img_bgr, (100, 100))
             pixels = small.reshape(-1, 3).astype(np.float32)
 
@@ -412,11 +534,9 @@ class ChartAnalyzer:
                 pixels, k, None, criteria, 5, cv2.KMEANS_PP_CENTERS
             )
 
-            # Подсчёт пикселей в каждом кластере
             _, counts = np.unique(labels, return_counts=True)
             total = counts.sum()
 
-            # Значимые кластеры (> 5% пикселей), кроме белого/чёрного
             colors = []
             for center, count in sorted(
                 zip(centers, counts), key=lambda x: -x[1]
@@ -425,7 +545,6 @@ class ChartAnalyzer:
                 if pct < 0.05:
                     continue
                 b, g, r = int(center[0]), int(center[1]), int(center[2])
-                # Пропуск почти белого и почти чёрного
                 if (r > 230 and g > 230 and b > 230):
                     continue
                 if (r < 25 and g < 25 and b < 25):
@@ -470,56 +589,12 @@ class ChartAnalyzer:
             return {"has_lines": False, "num_lines": 0}
 
     # ────────────────────────────────────────────────────────────
-    # Генерация описания
+    # Утилиты
     # ────────────────────────────────────────────────────────────
-
-    def _generate_description(self, result: ChartAnalysisResult) -> str:
-        """
-        Сгенерировать текстовое описание на основе всех анализов.
-        """
-        parts = []
-
-        # Тип графика
-        if result.chart_type != "unknown":
-            parts.append(
-                f"{result.chart_type_ru} "
-                f"(уверенность: {result.confidence:.0%})"
-            )
-
-        # Структурная информация
-        struct_info = []
-        if result.num_color_segments > 0:
-            struct_info.append(
-                f"{result.num_color_segments} цветовых категорий"
-            )
-        if result.has_lines:
-            struct_info.append(f"{result.num_lines} прямых линий обнаружено")
-
-        if struct_info:
-            parts.append("Структура: " + ", ".join(struct_info))
-
-        # Цвета
-        if result.dominant_colors:
-            parts.append(
-                "Цвета: " + ", ".join(result.dominant_colors[:3])
-            )
-
-        # Наличие текста
-        if result.has_text:
-            # Извлекаем ключевые слова из OCR
-            keywords = self._extract_keywords(result.ocr_text)
-            if keywords:
-                parts.append(f"Ключевые слова: {', '.join(keywords[:10])}")
-        else:
-            parts.append("Текст на изображении не обнаружен")
-
-        return ". ".join(parts) + "."
 
     def _extract_keywords(self, text: str) -> List[str]:
         """Извлечь ключевые слова из OCR-текста."""
-        # Простая эвристика: слова > 3 символов, не числа
         words = re.findall(r"[а-яА-ЯёЁa-zA-Z]{3,}", text)
-        # Уникальные в порядке появления
         seen = set()
         unique = []
         for w in words:
