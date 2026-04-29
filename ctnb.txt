@@ -1,0 +1,141 @@
+1)dhcp-сервер для dmz-сети и разрешить выход в интернет для хостов из dmz-сети
+	1.1)Создать DHCP server во вкладке DHCP
+	  interface: dmz
+	  Relayer Filter: 0.0.0.0 либо dhcp_int_only
+	  IP Address Pool: (ip dmz(exmp:172.17.10.10-172.17.10-20))
+	  Netmask: dhcp_mask (255.255.255.0)
+
+	  <Default Gateway="dmz_ip" DNS1 = "dmz_ip">
+
+	1.2)Ip rules
+	  1.2.1)
+	  Name: Sat_dmz, action:sat, services: dns-all
+	  Source: dmz, source network: dmznet
+	  Destination: core, Destination network: dmz_ip
+	  в доп вкладке при создании sat->new ip: wan2_dns1
+
+	  1.2.2)
+ 	  Name: Nat_dmz, action:Nat services: dns-all
+	  Source: dmz, source network: dmznet
+	  Destination: core, Destination network: dmz_ip
+
+
+	  1.2.3)если без доступа в интернет то добавить правило nat
+	  Name: allow-dmz-inet, action:Nat services: all_services
+	  Source: dmz, source network: dmznet
+	  Destination: wan2, Destination network: all-nets
+--------------------------------------------------------------------------------	
+================================================================================
+2)port-based vlan для хостов в lan
+
+Для каждого участника VLAN необходимо создать dhcp сервер
+
+2.0)interface->VLAN
+2.0.1)
+Name: VLAN_1
+interface: LAN
+VLAN_ID: 27 (в принципе любое двухзначное число, но лучше делать по числу которое 3е после точки, т.е. 192.168.(27).20)
+IPv4: 192.168.27->(17+10).20->(10+10)    <-vlan_1_ip
+Network: 192.168.27->(17+10).0/24	 <-vlan_1_net
+
+2.0.2)
+Name: VLAN_2
+interface: LAN
+VLAN_ID: 37 (в принципе любое двухзначное число, но лучше делать по числу которое 3е после точки, т.е. 192.168.(37).20)
+IPv4: 192.168.37->(17+20).20->(10+20)   <- vlan_2_ip
+Network: 192.168.37->(17+20).0/24	<- vlan_2_net
+-----------------------
+2.1.1)dhcp server
+Name:dhcp_1_vlan
+interface: VLAN_1
+Relayer Filter: 0.0.0.0 либо dhcp_int_only
+IP Address Pool: 192.168.27.20-192.168.27.30 (пулл адресов для дачи их машинам(exmpl: 192.168.17.10(основной, который у тебя) -> 192.168.27.20(который даешь)))
+Netmask: dhcp_mask (255.255.255.0)
+
+<Default Gateway = "vlan1_ip" DNS1 = "vlan1_ip">
+
+2.1.2)dhcp server
+dhcp_2_vlan
+interface: VLAN_2
+Relayer Filter: 0.0.0.0 либо dhcp_int_only
+IP Address Pool: 192.168.37.20-192.168.37.30 (пулл адресов для дачи их машинам(exmpl: 192.168.17.10(основной, который у тебя) -> 192.168.37.20(который даешь)))
+Netmask: dhcp_mask (255.255.255.0)
+
+<Default Gateway="vlan2_ip" DNS1="vlan2_ip">
+---------------------------
+===========================
+2.2)ip rules
+2.2.1)
+Name: Sat_vlan1, action:sat, services: dns-all
+Source: VLAN_1, source network: vlan_1_net
+Destination: core, Destination network: vlan_1_ip
+в доп вкладке при создании sat->new ip: wan2_dns1
+
+2.2.2)
+Name: Nat_vlan1, action:Nat services: dns-all
+Source: VLAN_1, source network: vlan_1_net
+Destination: core, Destination network: vlan_1_ip
+
+
+2.2.3)
+Name: Sat_vlan2, action:sat, services: dns-all
+Source: VLAN_2, source network: vlan_2_net
+Destination: core, Destination network: vlan_2_ip
+в доп вкладке при создании sat->new ip: wan2_dns1
+
+2.2.4)
+Name: Nat_vlan2, action:Nat services: dns-all
+Source: VLAN_2, source network: vlan_2_net
+Destination: core, Destination network: vlan_2_ip
+
+-----------------------------------------------
+Vlan to inet
+
+2.2.5)
+Name: Nat_vlan1_toinet, action:Nat services: all_services
+Source: VLAN_1, source network: vlan_1_net
+Destination: wan2, Destination network: all-nets
+
+2.2.6)
+Name: Nat_vlan2_toinet, action:Nat services: all_services
+Source: VLAN_2, source network: vlan_2_net
+Destination: wan2, Destination network: all-nets
+------------------------------------------------
+switch management
+попрыгать по портам и подавать вланы, но не забивать все порты.
+
+===============================================================================
+
+
+
+3)gre-туннель, правила МЭ
+3.1)Gre-tunnel
+Name: GRE_1
+IP Adress: 192.168.любое.любое 
+Network: если через влан, то указываем сеть влана к кому, т.е. .../24
+Remote endpoint: wan2 человека, к которому подключаетесь
+
+на другой стороне тож самое, только свое надо дать.
+
+3.2)ip rules
+Name: gre_in, action:allow services: all_services
+Source: GRE_1, source network: сеть к кому через .../24
+Destination: vlan, Destination network: моя сеть .../24 
+
+Name: gre_out, action:allow services: all_services
+Source: vlan, source network: моя сеть .../24
+Destination: GRE_1 , Destination network: сеть к кому через .../24
+
+это для нат
+< Name="gre_out" Action="NAT" Source Interface= vlan_номер через который Destination Interface=GRE_1 Source Network=vlan_?_net Destination Network= к кому .../24 Service="all_services">
+
+после создания туннеля пропинговать а только потом настраивать правила и отключать allow_all
+пинг через сам маршрутизатор, на него нужно зайти через putty
+ping к кому -v -recvif=через что, в данном случае через влан, который забит уже со 2го задания.
+
+
+логи для гре навский чтоб подставить
+
+<IPRuleFolder Name="gre_tunnel" disabled="1">
+<IPRule Name="gre_in" Action="Allow" SourceInterface="gre_kd" DestinationInterface="core" SourceNetwork="192.168.56.10" DestinationNetwork="vlan2_group_kd/vlan2_kd_ip" Service="all_services" disabled="1" />
+<IPRule Name="gre_out" Action="NAT" SourceInterface="vlan2_kd_2" DestinationInterface="gre_kd" SourceNetwork="vlan2_group_kd/vlan2_kd_network" DestinationNetwork="192.168.25.0/24" Service="all_services" disabled="1" />
