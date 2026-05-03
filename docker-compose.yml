@@ -7,6 +7,11 @@ services:
       - .:/app
       - model_cache:/root/.cache
     working_dir: /app
+    shm_size: '2gb'
+    deploy:
+      resources:
+        limits:
+          memory: 8g
     ports:
       - "8888:8888"
       - "8000:8000"

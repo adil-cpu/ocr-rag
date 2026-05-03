@@ -63,13 +63,15 @@ class ImageExtractor:
         self,
         pdf_path: str,
         output_dir: Optional[str] = None,
+        max_images: Optional[int] = None,
     ) -> List[ExtractedImage]:
         """
-        Извлечь все изображения из PDF.
+        Извлечь изображения из PDF.
 
         Args:
             pdf_path: путь к PDF-файлу
             output_dir: папка для сохранения (если None — не сохраняет)
+            max_images: максимальное количество изображений (None — все)
 
         Returns:
             Список ExtractedImage с метаданными
@@ -83,7 +85,8 @@ class ImageExtractor:
         all_images: List[ExtractedImage] = []
         seen_hashes = set()
 
-        logger.info(f"Извлечение изображений из: {pdf_path} ({len(doc)} страниц)")
+        limit_msg = f", лимит: {max_images}" if max_images else ""
+        logger.info(f"Извлечение изображений из: {pdf_path} ({len(doc)} страниц{limit_msg})")
 
         for page_num in range(len(doc)):
             page = doc[page_num]
@@ -107,6 +110,12 @@ class ImageExtractor:
                     logger.debug(f"  Сохранено: {save_path}")
 
                 all_images.append(img_data)
+
+                # Ранний выход при достижении лимита
+                if max_images and len(all_images) >= max_images:
+                    logger.info(f"Достигнут лимит: {max_images} изображений")
+                    doc.close()
+                    return all_images
 
         doc.close()
 
