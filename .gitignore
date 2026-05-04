@@ -48,9 +48,6 @@ data/indexes/*.faiss
 data/indexes/*.pkl
 data/indexes/
 
-# PDF files (too large for GitHub)
-data/input_pdfs/*.pdf
-
 # Extracted images (regenerable)
 data/images/
 
