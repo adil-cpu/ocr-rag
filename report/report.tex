@@ -230,14 +230,6 @@ d = \sqrt{\sum_{i=1}^{n} (x_i - y_i)^2},
     \item \textbf{Модуль генерации}~--- формирование промпта с контекстом из найденных чанков и отправка запроса к внешнему GPT~API для генерации ответа.
 \end{enumerate}
 
-Схема архитектуры представлена на рис.~\ref{fig:architecture-ch2}.
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.8\textwidth]{img/mermaid-diagram.png}
-    \caption{Архитектура мультимодальной RAG-системы}
-    \label{fig:architecture-ch2}
-\end{figure}
 
 \begin{table}[H]
     \centering
@@ -389,14 +381,7 @@ src/
   cli.py                  # CLI-интерфейс
 \end{lstlisting}
 
-Общая схема пайплайна обработки документа с указанием количества элементов на каждом этапе (для документа <<diploma\_example.pdf>>) представлена на рис.~\ref{fig:pipeline-overview}.
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.95\textwidth]{img/pipeline_overview.png}
-    \caption{Схема пайплайна обработки документа (diploma\_example.pdf: 41 стр. $\rightarrow$ 214 блоков $\rightarrow$ 76 чанков $\rightarrow$ 384d эмбеддинги $\rightarrow$ top-5 $\rightarrow$ GPT API)}
-    \label{fig:pipeline-overview}
-\end{figure}
+Общая схема пайплайна обработки документа включает следующие этапы: PDF~$\rightarrow$~PyMuPDF (извлечение блоков)~$\rightarrow$~BlockClassifier (5 типов)~$\rightarrow$~ImageExtractor + CLIP (chart/image)~$\rightarrow$~ChartAnalyzer (OCR + BLIP + GPT)~$\rightarrow$~MarkdownBuilder~$\rightarrow$~Chunker~$\rightarrow$~SBERT (384d)~$\rightarrow$~FAISS~$\rightarrow$~GPT API. Для документа <<diploma\_example.pdf>> (41 стр.) это даёт 214 блоков, 35 изображений (11 графиков + 24 фото), 76 чанков.
 
 \subsection{Модуль предобработки документов}
 
@@ -429,23 +414,50 @@ class OCRProcessor:
 
 \subsection{Модуль анализа структуры (Layout Analysis)}
 
-Анализ структуры документа реализован на основе эвристической классификации без использования нейросетей. Класс \texttt{BlockClassifier} определяет тип блока по следующим правилам:
+Анализ структуры документа реализован с использованием двухэтапного гибридного подхода.
+
+\textbf{Этап 1 --- эвристическая классификация.} Класс \texttt{BlockClassifier} определяет тип блока по правилам без нейросетей:
 
 \begin{enumerate}
-    \item \textbf{header}: текст короче 80 символов, полностью в верхнем регистре; или текст короче 60 символов, заканчивающийся двоеточием
-    \item \textbf{list\_item}: текст начинается с маркеров <<\textbullet>>, <<->>, <<-->>
+    \item \textbf{header}: текст короче 80 символов, полностью в верхнем регистре; или короче 60 символов с двоеточием в конце
+    \item \textbf{list}: текст начинается с маркеров <<\textbullet>>, <<->>, <<-->>
     \item \textbf{table}: текст содержит $\geq$4 цифры и $\geq$5 пробелов
-    \item \textbf{paragraph}: все остальные блоки
+    \item \textbf{no\_text}: блок не содержит текста (визуальный элемент)
+    \item \textbf{text}: все остальные блоки
 \end{enumerate}
 
-Модуль \texttt{PageAnalyzer} использует PyMuPDF для извлечения блоков из каждой страницы PDF с сохранением координат bounding box, что обеспечивает точную привязку к исходному документу. Результат работы layout analysis продемонстрирован на рис.~\ref{fig:layout-page}: каждый блок выделен цветной рамкой в соответствии с его типом.
+\textbf{Этап 2 --- AI-классификация (CLIP).} Модуль \texttt{ImageClassifier} принимает все блоки типа \texttt{no\_text} и классифицирует их с помощью zero-shot модели CLIP (ViT-B-32) на 2 подтипа:
+\begin{itemize}
+    \item \textbf{chart} --- графики, диаграммы, схемы (нуждаются в транскрипции)
+    \item \textbf{image} --- фотографии, иллюстрации
+\end{itemize}
 
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.55\textwidth]{img/layout_analysis_page.png}
-    \caption{Результат layout analysis: визуализация классифицированных блоков на странице PDF (paragraph~--- синий, header~--- красный, list\_item~--- зелёный, table~--- оранжевый, image~--- фиолетовый)}
-    \label{fig:layout-page}
-\end{figure}
+Итого система распознаёт 7 типов блоков: \texttt{header}, \texttt{text}, \texttt{list}, \texttt{table}, \texttt{no\_text}, \texttt{chart}, \texttt{image}.
+
+Модуль \texttt{PageAnalyzer} использует PyMuPDF для извлечения блоков из каждой страницы PDF с сохранением координат bounding box.
+
+\subsection{Модуль извлечения изображений (ImageExtractor)}
+
+Класс \texttt{ImageExtractor} извлекает растровые изображения из PDF через PyMuPDF. Реализованы:
+\begin{itemize}
+    \item Фильтрация артефактов по минимальному размеру (ширина $\geq$ 100~px, высота $\geq$ 100~px)
+    \item Дедупликация по хешу изображения (MD5)
+    \item Параметр \texttt{max\_images} для ограничения количества извлекаемых изображений --- ранний выход из цикла для экономии памяти на больших документах (344+ страниц)
+    \item Сохранение на диск с метаданными (номер страницы, bounding box)
+\end{itemize}
+
+\subsection{Модуль транскрипции графиков (ChartAnalyzer)}
+
+Для блоков типа \texttt{chart} применяется цепочка из четырёх моделей:
+
+\begin{enumerate}
+    \item \textbf{OCR (Tesseract)} --- извлечение текста с осей и подписей (русский, казахский, английский)
+    \item \textbf{CLIP} --- определение подтипа графика (столбчатая диаграмма, линейный график, круговая диаграмма и т.д.)
+    \item \textbf{BLIP} --- генерация структурного описания изображения на английском языке
+    \item \textbf{GPT API} --- синтез данных OCR, CLIP и BLIP в связную транскрипцию на русском языке (3--5 предложений)
+\end{enumerate}
+
+Результат транскрипции встраивается в Markdown-документ в виде текстового блока, что позволяет SBERT-эмбеддеру индексировать смысл графиков наравне с текстом.
 
 \subsection{Модуль семантического разбиения (Chunking)}
 
@@ -507,7 +519,7 @@ C_i = T[s_i : e_i], \quad s_{i+1} = e_i - \delta,
 
 \subsection{Выводы по главе}
 
-Реализован полнофункциональный прототип мультимодальной RAG-системы, включающий 11 модулей Python и CLI-интерфейс. Система поддерживает полный цикл: от загрузки PDF до генерации ответов. Docker-контейнеризация обеспечивает воспроизводимость. Модульная архитектура позволяет независимо заменять компоненты (например, эмбеддер или LLM).
+Реализован полнофункциональный прототип мультимодальной RAG-системы. Система включает модули: PageAnalyzer, BlockClassifier (5 типов), ImageExtractor, ImageClassifier (CLIP), ChartAnalyzer (OCR + BLIP + GPT), MarkdownBuilder, MarkdownChunker, MultimodalEmbedder (SBERT + CLIP), FAISSVectorStore, MultimodalRetriever и RAGGenerator. Система поддерживает полный цикл: от загрузки PDF до генерации ответов. Docker-контейнеризация обеспечивает воспроизводимость. Модульная архитектура позволяет независимо заменять компоненты (например, эмбеддер или LLM).
 
 \newpage
 
