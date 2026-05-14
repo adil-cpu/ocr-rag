@@ -15,10 +15,10 @@ services:
     ports:
       - "8888:8888"
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - PYTHONPATH=/app
-      - LLM_API_URL=https://gpt.serverspace.kz/v1/chat/completions
-      - LLM_API_KEY=Bearer HOMTOLdjkOgJ1KHPI5TF+DpaUQiNPxuJxHg2fx+qGQnhbagRBrDquLAhdEKDyEnMqu91LXZe8bTmfTGxfFX2+Q==
     command: >
       jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root
 
