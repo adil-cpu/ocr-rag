@@ -67,7 +67,8 @@
 \addtolength{\topmargin}{-2.5pt}
 
 % Интервал
-\setstretch{1.5} % Стандартный полуторный интервал для диссертаций
+\setstretch{1.5} % Стандартный полуторный интервал
+\sloppy % Предотвращает выход текста за поля
 
 \begin{document}
 
@@ -119,8 +120,7 @@
 \end{center}
 \end{titlepage}
 
-
-\newpage
+\setcounter{page}{2}
 
 % --- Содержание ---
 \tableofcontents
@@ -272,7 +272,7 @@ d = \sqrt{\sum_{i=1}^{n} (x_i - y_i)^2},
 
 \textbf{Сегментация} выполняется иерархически: сначала документ разбивается по Markdown-заголовкам, затем внутри каждого раздела~--- по абзацам. Контролируется максимальный размер чанка (1000 символов) и добавляется перекрытие (100 символов) между соседними чанками для сохранения контекста на границах.
 
-\textbf{Векторизация} чанков выполняется мультиязычной моделью Sentence-BERT (\texttt{paraphrase-multilingual-MiniLM-L12-v2}), которая генерирует 384-мерные нормализованные эмбеддинги. Модель поддерживает 50+ языков, включая русский и казахский. Механизм внимания (attention) модели позволяет фокусироваться на ключевых словах. Сходство между эмбеддингами запроса и чанков вычисляется по формуле косинусного сходства:
+\textbf{Векторизация} чанков выполняется мультиязычной моделью Sentence-BERT (\texttt{paraphrase\hbox{-}multilingual\hbox{-}MiniLM\hbox{-}L12\hbox{-}v2}), которая генерирует 384-мерные нормализованные эмбеддинги. Модель поддерживает 50+ языков, включая русский и казахский. Механизм внимания позволяет фокусироваться на ключевых словах. Сходство между эмбеддингами вычисляется по формуле косинусного сходства:
 \[
 \cos(\theta) = \frac{\mathbf{A} \cdot \mathbf{B}}{\|\mathbf{A}\| \|\mathbf{B}\|},
 \]
@@ -407,7 +407,7 @@ d = \sqrt{\sum_{i=1}^{n} (x_i - y_i)^2},
   \draw[arrow] (imgext) -- (clip);
   \draw[arrow] (clip) -- node[above, font=\scriptsize]{chart} (chart);
   \draw[arrow] (chart) |- (md);
-  \draw[arrow] (classifier) |- node[near start, right, font=\scriptsize]{text} (md);
+  \draw[arrow] (classifier.south) -- ++(0,-0.3) -| node[near start, right, font=\scriptsize]{text} (md.north);
   \draw[arrow] (md) -- (chunker);
   \draw[arrow] (chunker) -- (sbert);
   \draw[arrow] (sbert) -- (faiss);
@@ -503,7 +503,7 @@ d = \sqrt{\sum_{i=1}^{n} (x_i - y_i)^2},
     \item \textbf{Перекрытие (overlap)}: 100 символов между соседними чанками для сохранения контекста
 \end{enumerate}
 
-Каждый чанк аннотируется метаданными: уникальный идентификатор, тип (text/table/image\_caption), номер страницы, название раздела, источник.
+Каждый чанк аннотируется метаданными: уникальный идентификатор, тип (text, table, image\_caption), номер страницы, название раздела и источник.
 
 Формула определения границ чанка с перекрытием:
 \[
@@ -515,7 +515,7 @@ C_i = T[s_i : e_i], \quad s_{i+1} = e_i - \delta,
 
 Модуль эмбеддингов реализует два эмбеддера с ленивой загрузкой моделей:
 
-\textbf{TextEmbedder} использует мультиязычную модель Sentence-BERT (\texttt{paraphrase-multilingual-MiniLM-L12-v2}), генерируя нормализованные 384-мерные векторы. Модель обучена на параллельных корпусах 50+ языков, что обеспечивает корректную обработку русских и казахских текстов. Процесс: текст~$\rightarrow$~токенизация~$\rightarrow$~forward pass через трансформер~$\rightarrow$~mean pooling~$\rightarrow$~L2-нормализация:
+\textbf{TextEmbedder} использует мультиязычную модель Sentence-BERT (\texttt{paraphrase\hbox{-}multilingual\hbox{-}MiniLM\hbox{-}L12\hbox{-}v2}), генерируя нормализованные 384-мерные векторы. Модель обучена на параллельных корпусах 50+ языков, что обеспечивает корректную обработку русских и казахских текстов. Процесс векторизации: текст~$\rightarrow$~токенизация~$\rightarrow$~трансформер~$\rightarrow$~mean pooling~$\rightarrow$~L2-нормализация:
 \[
 \mathbf{e} = \frac{\text{MeanPool}(\text{BERT}(\text{tokenize}(t)))}{\|\text{MeanPool}(\text{BERT}(\text{tokenize}(t)))\|_2}
 \]
