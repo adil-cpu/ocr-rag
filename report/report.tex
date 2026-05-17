@@ -17,6 +17,8 @@
 \usepackage{enumitem} % Для настройки списков
 \usepackage{ragged2e}
 \usepackage{tabularx} % Для таблиц с авто-шириной
+\usepackage{tikz} % Для диаграмм
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, calc}
 % amsmath уже подключен выше (строка 5)
 \DeclareMathOperator{\softmax}{softmax}
 
@@ -59,7 +61,8 @@
 % Настройка колонтитулов
 \pagestyle{fancy}
 \fancyhf{}
-\rhead{\thepage}
+\cfoot{\thepage}
+\renewcommand{\headrulewidth}{0pt}
 \setlength{\headheight}{14.5pt}
 \addtolength{\topmargin}{-2.5pt}
 
@@ -183,7 +186,7 @@
     \item \textbf{Генерация ответа}: Обогащение промпта LLM контекстом из найденных чанков, минимизируя галлюцинации за счёт фактических данных. Промпт может включать инструкцию: "Ответь только на основе предоставленного контекста".
 \end{enumerate}
 
-Это снижает галлюцинации за счёт фактических данных, как подтверждается бенчмарками типа RAGAS, где улучшение F1-score составляет 15--25\%~[1].
+Это снижает галлюцинации за счёт фактических данных, как подтверждается бенчмарками типа RAGAS, где улучшение F1-score составляет 15--25\%~[1]. Сравнение существующих RAG-фреймворков приведено в табл.~\ref{tab:rag-frameworks-ch1}.
 
 \begin{table}[H]
     \centering
@@ -222,9 +225,7 @@ d = \sqrt{\sum_{i=1}^{n} (x_i - y_i)^2},
 \]
 где x, y --- векторы; это измеряет евклидово расстояние для ранжирования результатов в k-NN алгоритме. Процесс: эмбеддинг запроса, поиск в индексе, reranking для точности.
 
-\subsection{Выводы по главе}
 
-В ходе анализа установлено, что существующие подходы к генерации ответов по документации характеризуются ограничениями, связанными с игнорированием графической информации и склонностью к галлюцинациям. Традиционные LLM эффективны для текста, но требуют интеграции RAG для внешнего контекста, а мультимодальные модели вроде CLIP открывают пути для обработки визуалов. Это обосновывает необходимость разработки мультимодальной RAG-системы, способной интегрировать текстовую и визуальную информацию в процессы поиска и генерации с использованием формул сходства и эмбеддингов. Рекомендуется акцентировать внимание на интеграции ViT и FAISS для оптимизации retrieval и минимизации галлюцинаций.
 \newpage
 
 % --- Глава 2 ---
@@ -244,6 +245,7 @@ d = \sqrt{\sum_{i=1}^{n} (x_i - y_i)^2},
     \item \textbf{Модуль генерации}~--- формирование промпта с контекстом из найденных чанков и отправка запроса к внешнему GPT~API для генерации ответа.
 \end{enumerate}
 
+Компоненты системы и используемые инструменты представлены в табл.~\ref{tab:components-ch2}.
 
 \begin{table}[H]
     \centering
@@ -308,9 +310,6 @@ d = \sqrt{\sum_{i=1}^{n} (x_i - y_i)^2},
 
 Температура генерации установлена на 0.3, что обеспечивает баланс между разнообразием и фактической точностью ответов.
 
-\subsection{Выводы по главе}
-
-Предложена методология разработки мультимодальной RAG-системы с математическим обоснованием каждого этапа: сегментация с перекрытием, векторизация через SBERT и CLIP, кросс-модальный поиск в FAISS, генерация с ограничивающим промптом. Архитектура спроектирована модульно, что обеспечивает независимую замену компонентов.
 
 \newpage
 
@@ -321,33 +320,33 @@ d = \sqrt{\sum_{i=1}^{n} (x_i - y_i)^2},
 
 \subsection{Технологический стек и окружение}
 
-Для реализации прототипа был выбран следующий технологический стек:
+Для реализации прототипа был выбран технологический стек, представленный в табл.~\ref{tab:tech-stack}.
 
 \begin{table}[H]
     \centering
     \caption{Технологический стек системы}
     \label{tab:tech-stack}
-    \begin{tabular}{|l|l|l|}
+    \begin{tabularx}{\textwidth}{|l|l|X|}
         \hline
         \textbf{Компонент} & \textbf{Технология} & \textbf{Назначение} \\
         \hline
-        Язык программирования & Python 3.10 & Основной язык разработки \\
+        Язык & Python 3.10 & Основной язык разработки \\
         \hline
-        Контейнеризация & Docker + Docker Compose & Изоляция окружения \\
+        Контейнеризация & Docker + Compose & Изоляция окружения \\
         \hline
-        OCR & Tesseract OCR 5.x & Распознавание текста (rus+eng+kaz) \\
+        OCR & Tesseract 5.x & Распознавание текста (rus+eng+kaz) \\
         \hline
-        PDF-обработка & PyMuPDF (fitz) & Извлечение блоков и изображений \\
+        PDF & PyMuPDF (fitz) & Извлечение блоков и изображений \\
         \hline
-        Текстовые эмбеддинги & SBERT (paraphrase-multilingual-MiniLM-L12-v2) & Мультиязычная векторизация (384d) \\
+        Текст. эмб. & SBERT (MiniLM-L12-v2) & Мультиязычная векторизация (384d) \\
         \hline
-        Визуальные эмбеддинги & CLIP (ViT-B-32) & Векторизация изображений (512d) \\
+        Виз. эмб. & CLIP (ViT-B-32) & Векторизация изображений (512d) \\
         \hline
         Векторная БД & FAISS (IndexFlatIP) & Поиск по сходству \\
         \hline
-        LLM & GPT API (gpt-oss-20b) & Генерация ответов через внешний API \\
+        LLM & GPT API (gpt-oss-20b) & Генерация ответов \\
         \hline
-    \end{tabular}
+    \end{tabularx}
 \end{table}
 
 Система разворачивается в Docker-контейнере с использованием Docker Compose (рис.~\ref{fig:docker-arch}). Конфигурация включает сервис \texttt{ocr} с Python~3.10, Tesseract OCR, FAISS и Jupyter Notebook. Модель LLM вынесена во внешний GPT API (\texttt{gpt.serverspace.kz}), что снижает требования к локальным вычислительным ресурсам. Docker-контейнеризация обеспечивает воспроизводимость экспериментов и изоляцию зависимостей.
@@ -368,63 +367,83 @@ d = \sqrt{\sum_{i=1}^{n} (x_i - y_i)^2},
 
 \subsection{Модульная архитектура системы}
 
-Система реализована в виде модульной архитектуры, состоящей из шести основных компонентов, организованных в пакеты Python:
+Система реализована в виде модульной архитектуры, состоящей из шести основных пакетов:
 
-\begin{lstlisting}[caption={Структура проекта}]
-src/
-  preprocessing/
-    ocr_processor.py      # OCR через Tesseract
-    markdown_builder.py   # Блоки -> Markdown
-    image_extractor.py    # Извлечение изображений из PDF
-    image_captioner.py    # Генерация подписей (OCR+CLIP)
-  layout/
-    block.py              # Модель блока документа
-    classifier.py         # Классификация блоков
-  pipeline/
-    page_analyzer.py      # Разбор страниц PDF
-    rag_pipeline.py       # Полный RAG-пайплайн
-  rag/
-    chunker.py            # Семантическое разбиение
-    embedder.py           # SBERT + CLIP эмбеддинги
-    vector_store.py       # FAISS индекс
-    retriever.py          # Мультимодальный поиск
-    generator.py          # Генерация через GPT API
-  evaluation/
-    metrics.py            # BLEU, ROUGE-L, Faithfulness
-    benchmark.py          # Бенчмарк оценки
-  cli.py                  # CLI-интерфейс
-\end{lstlisting}
+\begin{enumerate}
+    \item \textbf{preprocessing} --- предобработка документов: извлечение текста (OCR), извлечение изображений из PDF, формирование Markdown-представления
+    \item \textbf{layout} --- анализ структуры: модель блока документа и двухэтапная классификация (эвристики + CLIP)
+    \item \textbf{pipeline} --- оркестрация: разбор страниц PDF и управление полным RAG-пайплайном
+    \item \textbf{rag} --- ядро системы: семантическое разбиение на чанки, векторизация (SBERT~+~CLIP), индексация (FAISS), мультимодальный поиск и генерация ответов
+    \item \textbf{evaluation} --- оценка качества: вычисление метрик BLEU, ROUGE-L, Faithfulness
+    \item \textbf{cli} --- интерфейс командной строки для запуска пайплайна
+\end{enumerate}
 
-Общая схема пайплайна обработки документа включает следующие этапы: PDF~$\rightarrow$~PyMuPDF (извлечение блоков)~$\rightarrow$~BlockClassifier (5 типов)~$\rightarrow$~ImageExtractor + CLIP (chart/image)~$\rightarrow$~ChartAnalyzer (OCR + BLIP + GPT)~$\rightarrow$~MarkdownBuilder~$\rightarrow$~Chunker~$\rightarrow$~SBERT (384d)~$\rightarrow$~FAISS~$\rightarrow$~GPT API. Для документа <<diploma\_example.pdf>> (41 стр.) это даёт 214 блоков, 35 изображений (11 графиков + 24 фото), 76 чанков.
+Исходный код каждого модуля приведён в Приложении~А.
+
+Общая схема пайплайна представлена на рис.~\ref{fig:pipeline-flow}. Для документа <<diploma\_example.pdf>> (41 стр.) пайплайн извлекает 214 блоков, классифицирует 35 изображений (11 графиков~+~24 фото), формирует 76 чанков.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.6cm and 0.3cm,
+  block/.style={rectangle, draw, rounded corners, text centered, minimum height=0.9cm, minimum width=2.2cm, font=\small},
+  arrow/.style={-{Stealth[length=2.5mm]}, thick}]
+
+  \node[block, fill=blue!15] (pdf) {PDF};
+  \node[block, fill=blue!15, right=of pdf] (pymupdf) {PyMuPDF};
+  \node[block, fill=orange!20, right=of pymupdf] (classifier) {BlockClassifier};
+  \node[block, fill=red!15, below=of classifier] (imgext) {ImageExtractor};
+  \node[block, fill=red!15, right=of imgext] (clip) {CLIP};
+  \node[block, fill=red!15, right=of clip] (chart) {ChartAnalyzer};
+  \node[block, fill=green!15, below=of imgext] (md) {MarkdownBuilder};
+  \node[block, fill=green!15, right=of md] (chunker) {Chunker};
+  \node[block, fill=teal!15, right=of chunker] (sbert) {SBERT};
+  \node[block, fill=teal!15, below=of sbert] (faiss) {FAISS};
+  \node[block, fill=purple!15, left=of faiss] (gpt) {GPT API};
+  \node[block, fill=purple!15, left=of gpt] (answer) {Ответ};
+
+  \draw[arrow] (pdf) -- (pymupdf);
+  \draw[arrow] (pymupdf) -- (classifier);
+  \draw[arrow] (classifier) -- node[right, font=\scriptsize]{no\_text} (imgext);
+  \draw[arrow] (imgext) -- (clip);
+  \draw[arrow] (clip) -- node[above, font=\scriptsize]{chart} (chart);
+  \draw[arrow] (chart) |- (md);
+  \draw[arrow] (classifier) |- node[near start, right, font=\scriptsize]{text} (md);
+  \draw[arrow] (md) -- (chunker);
+  \draw[arrow] (chunker) -- (sbert);
+  \draw[arrow] (sbert) -- (faiss);
+  \draw[arrow] (faiss) -- (gpt);
+  \draw[arrow] (gpt) -- (answer);
+\end{tikzpicture}
+\caption{Схема пайплайна обработки документа}
+\label{fig:pipeline-flow}
+\end{figure}
 
 \subsection{Модуль предобработки документов}
 
 Модуль предобработки включает два подмодуля: \texttt{OCRProcessor} и \texttt{MarkdownBuilder}.
 
-\textbf{OCRProcessor} оборачивает библиотеку pytesseract для мультиязычного OCR. Поддерживаются три языка (русский, английский, казахский). Используется LSTM-движок Tesseract (OEM~3) с режимом распознавания <<uniform block>> (PSM~6):
+\textbf{OCRProcessor} оборачивает библиотеку Tesseract OCR для мультиязычного распознавания текста. Модуль принимает растровое изображение и возвращает распознанный текст. Поддерживаются три языка: русский, английский и казахский, которые передаются одновременно для корректной обработки смешанных документов. Используется LSTM-движок (OEM~3) с режимом <<uniform block>> (PSM~6), обеспечивающий распознавание однородных текстовых областей. Результаты фильтруются по порогу уверенности (confidence $> 30\%$) для отсеивания шумовых распознаваний. Реализация модуля приведена в Приложении~А.
 
-\begin{lstlisting}[language=Python, caption={Фрагмент OCRProcessor}]
-class OCRProcessor:
-    def __init__(self, languages="rus+eng+kaz"):
-        self.languages = languages
-        self.config = "--oem 3 --psm 6"
+\textbf{MarkdownBuilder} преобразует список классифицированных блоков документа в структурированный Markdown. Модуль реализует паттерн <<стратегия>>: каждому типу блока соответствует свой рендерер. Заголовки преобразуются в Markdown-заголовки второго уровня, текстовые блоки~--- в параграфы, таблицы~--- в Markdown-таблицы, а графики~--- в текстовые блоки с описанием, сгенерированным модулем транскрипции. Схема работы предобработки показана на рис.~\ref{fig:preprocessing-flow}.
 
-    def extract_text(self, image: Image) -> str:
-        return pytesseract.image_to_string(
-            image, lang=self.languages,
-            config=self.config
-        ).strip()
-
-    def extract_with_boxes(self, image: Image) -> List[Dict]:
-        data = pytesseract.image_to_data(
-            image, lang=self.languages,
-            output_type=pytesseract.Output.DICT
-        )
-        # Фильтр по confidence > 30%
-        return [box for box in parsed if box["conf"] > 30]
-\end{lstlisting}
-
-\textbf{MarkdownBuilder} преобразует список объектов \texttt{Block} (из модуля layout analysis) в структурированный Markdown-документ. Каждый тип блока обрабатывается специализированным рендерером: заголовки~$\rightarrow$~\texttt{\#\#}, параграфы~$\rightarrow$~текст, таблицы~$\rightarrow$~markdown-таблицы, изображения~$\rightarrow$~\texttt{![img](path)}.
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.7cm,
+  block/.style={rectangle, draw, rounded corners, text centered, minimum height=0.8cm, minimum width=2.5cm, font=\small},
+  arrow/.style={-{Stealth[length=2.5mm]}, thick}]
+  \node[block, fill=blue!15] (img) {Изображение};
+  \node[block, fill=orange!20, right=of img] (tess) {Tesseract OCR};
+  \node[block, fill=green!15, right=of tess] (filter) {Фильтр (conf $> 30\%$)};
+  \node[block, fill=teal!15, right=of filter] (text) {Текст};
+  \draw[arrow] (img) -- (tess);
+  \draw[arrow] (tess) -- (filter);
+  \draw[arrow] (filter) -- (text);
+  \node[below=0.3cm of tess, font=\scriptsize] {rus + eng + kaz};
+  \node[below=0.3cm of tess, yshift=-0.3cm, font=\scriptsize] {OEM 3, PSM 6};
+\end{tikzpicture}
+\caption{Схема работы модуля OCRProcessor}
+\label{fig:preprocessing-flow}
+\end{figure}
 
 \subsection{Модуль анализа структуры (Layout Analysis)}
 
@@ -520,20 +539,39 @@ C_i = T[s_i : e_i], \quad s_{i+1} = e_i - \delta,
 
 \subsection{Модуль генерации ответов}
 
-Генератор использует внешний GPT API (\texttt{gpt-oss-20b}, хостинг \texttt{gpt.serverspace.kz}) для генерации ответов. Ключевой элемент~--- системный промпт, ограничивающий модель контекстом:
+Генератор использует внешний GPT API (модель \texttt{gpt-oss-20b}, хостинг \texttt{gpt.serverspace.kz}) для генерации ответов. Процесс генерации состоит из трёх шагов:
 
-\begin{lstlisting}[caption={Системный промпт RAG-генератора}]
-"Ты -- интеллектуальный ассистент для анализа документов.
-Отвечай ТОЛЬКО на основе предоставленного контекста.
-Если в контексте нет информации, честно скажи об этом.
-НЕ выдумывай факты и НЕ добавляй внешнюю информацию."
-\end{lstlisting}
+\begin{enumerate}
+    \item \textbf{Формирование системного промпта}~--- модели задаётся роль интеллектуального ассистента с жёстким ограничением: отвечать \emph{только} на основе предоставленного контекста, не выдумывать факты и не привлекать внешнюю информацию
+    \item \textbf{Сборка пользовательского промпта}~--- контекст из retriever (top-K чанков с метаданными источника) объединяется с вопросом пользователя в единый запрос
+    \item \textbf{Генерация ответа}~--- запрос отправляется к GPT API с температурой 0.3 для минимизации стохастичности и повышения фактической точности
+\end{enumerate}
 
-Промпт пользователя включает контекст из retriever (top-K чанков с метаданными источника) и вопрос. Температура генерации установлена на 0.3 для минимизации стохастичности и повышения фактической точности.
+Схема процесса генерации представлена на рис.~\ref{fig:generation-flow}. Текст системного промпта приведён в Приложении~А.
 
-\subsection{Выводы по главе}
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.6cm and 0.4cm,
+  block/.style={rectangle, draw, rounded corners, text centered, minimum height=0.8cm, minimum width=2cm, font=\small},
+  arrow/.style={-{Stealth[length=2.5mm]}, thick}]
+  \node[block, fill=blue!15] (query) {Запрос};
+  \node[block, fill=blue!15, below=of query] (sbert) {SBERT};
+  \node[block, fill=teal!15, right=of sbert] (faiss) {FAISS top-K};
+  \node[block, fill=orange!20, right=of faiss] (prompt) {Сборка промпта};
+  \node[block, fill=purple!15, right=of prompt] (gpt) {GPT API};
+  \node[block, fill=green!15, below=of gpt] (answer) {Ответ};
+  \draw[arrow] (query) -- (sbert);
+  \draw[arrow] (sbert) -- (faiss);
+  \draw[arrow] (faiss) -- (prompt);
+  \draw[arrow] (prompt) -- (gpt);
+  \draw[arrow] (gpt) -- (answer);
+  \node[below=0.3cm of faiss, font=\scriptsize] {чанки + метаданные};
+\end{tikzpicture}
+\caption{Схема процесса генерации ответа}
+\label{fig:generation-flow}
+\end{figure}
 
-Реализован полнофункциональный прототип мультимодальной RAG-системы. Система включает модули: PageAnalyzer, BlockClassifier (5 типов), ImageExtractor, ImageClassifier (CLIP), ChartAnalyzer (OCR + BLIP + GPT), MarkdownBuilder, MarkdownChunker, MultimodalEmbedder (SBERT + CLIP), FAISSVectorStore, MultimodalRetriever и RAGGenerator. Система поддерживает полный цикл: от загрузки PDF до генерации ответов. Docker-контейнеризация обеспечивает воспроизводимость. Модульная архитектура позволяет независимо заменять компоненты (например, эмбеддер или LLM).
+
 
 \newpage
 
@@ -637,7 +675,7 @@ C_i = T[s_i : e_i], \quad s_{i+1} = e_i - \delta,
 
 \subsubsection{Транскрипция графиков}
 
-Цепочка OCR~$\rightarrow$~CLIP~$\rightarrow$~BLIP~$\rightarrow$~GPT API обеспечивает перевод визуальной информации в текст. На рис.~\ref{fig:chart-recognition} представлено визуальное сравнение: оригинальное изображение графика (слева) и его автоматическая транскрипция (справа).
+Цепочка OCR~$\rightarrow$~CLIP~$\rightarrow$~BLIP~$\rightarrow$~GPT API обеспечивает перевод визуальной информации в текст. На рис.~\ref{fig:chart-recognition} и рис.~\ref{fig:chart-recognition-odu} представлены примеры транскрипции: оригинальное изображение графика и его автоматическая транскрипция.
 
 \begin{figure}[H]
     \centering
@@ -722,17 +760,7 @@ C_i = T[s_i : e_i], \quad s_{i+1} = e_i - \delta,
     \item \textbf{Потеря контекста при chunking} (5\%): разбиение может разделить связанные данные
 \end{enumerate}
 
-\subsection{Выводы по главе}
 
-Экспериментальные результаты подтверждают работоспособность разработанной мультимодальной RAG-системы:
-\begin{itemize}
-    \item Система успешно обработала 2 документа (385 страниц), извлекла 5196 блоков и 55 изображений, создав 1100 чанков
-    \item Двухэтапная классификация (правила + CLIP) корректно разделяет визуальные элементы на графики и фотографии
-    \item Цепочка OCR + BLIP + GPT генерирует осмысленные транскрипции графиков на русском языке
-    \item Система масштабируется от 41 до 344 страниц без потери качества
-    \item Мультиязычная модель эмбеддингов корректно обрабатывает документы на русском и казахском языках
-    \item t-SNE визуализации подтверждают семантическую кластеризацию чанков по тематике
-\end{itemize}
 
 \newpage
 
@@ -813,5 +841,71 @@ C_i = T[s_i : e_i], \quad s_{i+1} = e_i - \delta,
 
     \item Smith, R. An Overview of the Tesseract OCR Engine // Proc. of ICDAR.~--- 2007.~--- P.~629--633. \label{ref:smith2007tesseract}
 \end{enumerate}
+
+\newpage
+
+% --- Приложение А ---
+\section*{Приложение А. Исходный код основных модулей}
+\addcontentsline{toc}{section}{Приложение А. Исходный код основных модулей}
+
+\subsection*{А.1. Структура проекта}
+
+\begin{lstlisting}[caption={Структура проекта}]
+src/
+  preprocessing/
+    ocr_processor.py      # OCR через Tesseract
+    markdown_builder.py   # Блоки -> Markdown
+    image_extractor.py    # Извлечение изображений из PDF
+    image_captioner.py    # Классификация (CLIP) и транскрипция
+    chart_analyzer.py     # OCR + BLIP + GPT для графиков
+  layout/
+    block.py              # Модель блока документа (7 типов)
+    classifier.py         # Двухэтапная классификация блоков
+  pipeline/
+    page_analyzer.py      # Разбор страниц PDF
+    rag_pipeline.py       # Полный RAG-пайплайн
+  rag/
+    chunker.py            # Семантическое разбиение
+    embedder.py           # SBERT + CLIP эмбеддинги
+    vector_store.py       # FAISS индекс
+    retriever.py          # Мультимодальный поиск
+    generator.py          # Генерация через GPT API
+  evaluation/
+    metrics.py            # BLEU, ROUGE-L, Faithfulness
+    benchmark.py          # Бенчмарк оценки
+  cli.py                  # CLI-интерфейс
+\end{lstlisting}
+
+\subsection*{А.2. Модуль OCRProcessor}
+
+\begin{lstlisting}[language=Python, caption={Фрагмент модуля OCRProcessor}]
+class OCRProcessor:
+    def __init__(self, languages="rus+eng+kaz"):
+        self.languages = languages
+        self.config = "--oem 3 --psm 6"
+
+    def extract_text(self, image: Image) -> str:
+        return pytesseract.image_to_string(
+            image, lang=self.languages,
+            config=self.config
+        ).strip()
+
+    def extract_with_boxes(self, image: Image) -> List[Dict]:
+        data = pytesseract.image_to_data(
+            image, lang=self.languages,
+            output_type=pytesseract.Output.DICT
+        )
+        # Фильтр по confidence > 30%
+        return [box for box in parsed if box["conf"] > 30]
+\end{lstlisting}
+
+\subsection*{А.3. Системный промпт RAG-генератора}
+
+\begin{lstlisting}[caption={Системный промпт RAG-генератора}]
+"Ты -- интеллектуальный ассистент для анализа документов.
+Отвечай ТОЛЬКО на основе предоставленного контекста.
+Если в контексте нет информации, честно скажи об этом.
+НЕ выдумывай факты и НЕ добавляй внешнюю информацию."
+\end{lstlisting}
 
 \end{document}
